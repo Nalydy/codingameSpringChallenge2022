@@ -72,7 +72,7 @@ while True:
 
             # Focus dangerous monsters first
             if very_dangerous_monsters:
-                target = dangerous_monsters[i % len(dangerous_monsters)]
+                target = very_dangerous_monsters[i % len(very_dangerous_monsters)]
                 current_action = move_on_target(target.x, target.y)
             
             elif dangerous_monsters:
@@ -81,7 +81,7 @@ while True:
 
             # If not too far and no threats, focus a random monster
             # TODO : change this for 'nearest monster'
-            elif monsters and current_action == None and dist_from_base < 8000:
+            elif monsters and current_action == None and dist_from_base < 5000:
                 target = monsters[i % len(monsters)]
                 current_action = move_on_target(target.x, target.y)
             
@@ -90,7 +90,6 @@ while True:
                 print(current_action)
             
             else:
-                #print('WAIT')
                 print(move_on_target(base_x, base_y))
                 print(f"Hero {i} failed to pick a decision.", file=sys.stderr, flush=True)
 
