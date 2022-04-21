@@ -1,18 +1,19 @@
-import sys
 import math
 from collections import namedtuple
 
-# This code use Python 3.9.12
-
-# Current league : Bois 2
+# Helpers
 
 def move_on_target(x, y):
     return f'MOVE {x} {y}'
 
+def nearest_from_base(list_of_monsters):
+    list_of_monsters.sort(key=lambda monster: monster.dist_from_base)  # sorts in place
+    return list_of_monsters[0]
+
 # Parsing the standard input according to the problem statement.
 
 Entity = namedtuple('Entity', [
-    'id', 'type', 'x', 'y', 'shield_life', 'is_controlled', 'health', 'vx', 'vy', 'near_base', 'threat_for'
+    'id', 'type', 'x', 'y', 'shield_life', 'is_controlled', 'health', 'vx', 'vy', 'near_base', 'threat_for', 'dist_from_base'
 ])
 
 TYPE_MONSTER = 0
@@ -48,7 +49,10 @@ while True:
                 health,         # health: Remaining health of this monster
                 vx, vy,         # vx,vy: Trajectory of this monster
                 near_base,      # near_base: 0=monster with no target yet, 1=monster targeting a base
-                threat_for      # threat_for: Given this monster's trajectory, is it a threat to 1=your base, 2=your opponent's base, 0=neither
+                threat_for,     # threat_for: Given this monster's trajectory, is it a threat to 1=your base, 2=your opponent's base, 0=neither
+                # Added
+                dist_from_base = math.dist((base_x, base_y),(x, y))
+            
             )
             
             if _type == TYPE_MONSTER:
@@ -67,22 +71,18 @@ while True:
             current_heroes = my_heroes[i]
             current_action = None
 
-            dist_from_base = math.dist((base_x, base_y),(current_heroes.x, current_heroes.y))
-            print(f"Hero {i} is at {dist_from_base} from base.", file=sys.stderr, flush=True)
-
             # Focus dangerous monsters first
             if very_dangerous_monsters:
-                target = very_dangerous_monsters[i % len(very_dangerous_monsters)]
+                target = nearest_from_base(very_dangerous_monsters)
                 current_action = move_on_target(target.x, target.y)
             
             elif dangerous_monsters:
-                target = dangerous_monsters[i % len(dangerous_monsters)]
+                target = nearest_from_base(dangerous_monsters)
                 current_action = move_on_target(target.x, target.y)            
 
-            # If not too far and no threats, focus a random monster
-            # TODO : change this for 'nearest monster'
-            elif monsters and current_action == None and dist_from_base < 5000:
-                target = monsters[i % len(monsters)]
+            # If not too far and no threats, focus the nearest monster
+            elif monsters and current_action == None and current_heroes.dist_from_base < 5000:
+                target = nearest_from_base(monsters)
                 current_action = move_on_target(target.x, target.y)
             
             # In the first league: MOVE <x> <y> | WAIT; In later leagues: | SPELL <spellParams>;
@@ -91,7 +91,3 @@ while True:
             
             else:
                 print(move_on_target(base_x, base_y))
-                print(f"Hero {i} failed to pick a decision.", file=sys.stderr, flush=True)
-
-
-
