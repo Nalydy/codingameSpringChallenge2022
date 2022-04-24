@@ -30,11 +30,19 @@ TL_NEUTRAL = 2
 TL_DANGEROUS = 3
 TL_PRIORITY = 4
 
+OFFENSIV_SPELL_MONSTER_HEALTH_TRESHOLD = 4
+
+# Quick search in monsters list
+NEAREST_F_B = 0
+FARTHEST_F_B = -1
+
+
 ####################
 # Global variables #
 ####################
 
-round_timer = 0 
+round_timer = 0
+metadata = "" 
 monsters = []
 opp_heroes = []
 
@@ -70,8 +78,11 @@ class Base():
             if x == 0 else \
             [Point(9500, 7100), Point(11350, 4800), Point(15130, 3000)]
         self.assassin_idle_spot = \
-            Point(15500, 3500) if x == 0 else Point(1850, 6000)
+            Point(12500, 5000) if x == 0 else Point(5100, 4500)
         self.eb = Point(17630, 9000) if x == 0 else Point(0, 0)
+
+        self.last_heroes_pos = [] # usefull to detect opponent wind
+
 
     def get_protector_idle_spot(self, i: int) -> Point:
         global heroes_per_player
@@ -97,7 +108,7 @@ class Monster():
         self.threat_level = threat_for + 2 if near_base == 0 else 2 * threat_for + 2
         self.next_pos = self.p.add(Point(vx, vy))
 
-        debug(f"ID {self.id}, TL {self.threat_level}, DFB {int(self.dist_from_base)}, VX {self.vx}, VY {self.vy}")
+        debug(f"ID {self.id}, TL {self.threat_level}, DFB {int(self.dist_from_base)}")
 
         # variable that will be set later
         self.threat = 0
@@ -107,6 +118,7 @@ class Monster():
 
         self.update_heros_needed()
 
+    # Usefull part for protector
 
     def update_need_more(self) -> None:
         # TODO : Take enemy WIND into possibility
@@ -141,10 +153,26 @@ class Monster():
         global round_timer
 
         return self.p.getDistFrom(hero.p) <= MR_WIND \
-            and self.shield_life == 0 \
-            and self.dist_from_base < 5000 \
-            and self.need_more # if can be killed without, why waste
+            and self.shield_life == 0 
 
+    # Usefull part for Assassin
+
+    def should_be_shield(self, hero):
+        global MR_SHIELD
+        global round_timer
+
+        return self.p.getDistFrom(hero.p) <= MR_SHIELD \
+            and self.shield_life == 0 \
+            and self.threat_level == TL_BFF # Is in the ennemy base
+
+    def should_be_controlled(self, hero):
+        global MR_CONTROL
+        global round_timer
+
+        return self.p.getDistFrom(hero.p) <= MR_CONTROL \
+            and self.shield_life == 0 \
+            and self.threat_level >= TL_NEUTRAL \
+            and self.health >= OFFENSIV_SPELL_MONSTER_HEALTH_TRESHOLD # TODO should depend on mana (osef if i have a lot)
 
 #################
 # heros classes #
@@ -177,6 +205,54 @@ class Hero(ABC):
         global my_mana
         my_mana -= 10
         return f'SPELL WIND {p.x} {p.y}'
+    
+    def shield(self, i: int) -> str:
+        global my_mana
+        my_mana -= 10
+        return f'SPELL SHIELD {i}'
+
+    def control(self, i: int, p: Point) -> str:
+        global my_mana
+        my_mana -= 10
+        return f'SPELL CONTROL {i} {p.x} {p.y}'
+
+
+    def should_shield_myself(self) -> bool:
+        global my_mana
+        # TODO : improve (if enemy, if was controlled or wind)
+        return my_mana > 10 and self.shield_life == 0
+
+
+class Opponent(Hero):
+    """Ennemy hero"""
+
+    def __init__(self, _id: int, x: int, y: int, shield_life: int, is_controlled: int):
+        super().__init__(_id, x, y, shield_life, is_controlled)
+        self.name = f"O"
+
+    def choose_action(self) -> str:
+        return ""
+    
+    def set_controlled(self) -> None:
+        self.is_controlled = True
+    
+    def should_be_control(self, hero):
+        global MR_CONTROL
+        global round_timer
+
+        return self.p.getDistFrom(hero.p) <= MR_CONTROL \
+            and self.shield_life == 0 \
+            and not self.is_controlled # Not sure of that one
+
+    def should_be_wind(self, hero):
+        global MR_WIND
+        global round_timer
+
+        return self.p.getDistFrom(hero.p) <= MR_WIND \
+            and self.shield_life == 0
+    
+    def is_assassin(self):
+        return self.dist_from_base < 7000
 
 
 class Protector(Hero):
@@ -192,30 +268,43 @@ class Protector(Hero):
         global base
         super().__init__(_id, x, y, shield_life, is_controlled)
         self.idle_point: Point = base.get_protector_idle_spot(self.id)
-        self.name = f"P"
+        self.name = f"P"    
 
-        # TODO : add defensives mesures if opponent around
+    def should_wind_monster_from_base(self, monster: Monster) -> bool :
+        return monster.should_be_wind(self) and monster.dist_from_base < 5000 and monster.need_more
+
+    def should_shield_myself(self) -> bool :
+        if self.shield_life > 0 or my_mana < 10:
+            return False
         # TODO : add a way to find if he has been controlled or wind
-    
+        opp_assassins = [opp_a for opp_a in opp_heroes if opp_a.is_assassin()]
+        return len(opp_assassins) > 0
+
+
     def choose_action(self) -> str:
         # Global variables used
         global monsters
         global round_timer
         global my_mana
         global base
+        global metadata
+        metadata += " " + self.name
+
+        if self.should_shield_myself():
+            return self.shield(self.id)
 
         target = None
 
         monster_to_target = [monster for monster in monsters if monster.need_more]
 
         if monster_to_target:
-            target = monster_to_target[0]
+            target = monster_to_target[NEAREST_F_B]
         elif monsters:
-            target = monsters[0]
+            target = monsters[NEAREST_F_B]
         
         if target:
             if my_mana > 10:
-                if target.should_be_wind(self):
+                if self.should_wind_monster_from_base(target):
                     return self.wind(base.eb)
             return self.move_on_monster(target)
         
@@ -226,9 +315,9 @@ class Assassin(Hero):
     """Hero version that attack enemy base
     
     Can use :
-        - WIND (TODO)
-        - CONTROL (TODO)
-        - SHIELD ? (TODO)
+        - WIND
+        - CONTROL
+        - SHIELD
     """
 
     def __init__(self, _id: int, x: int, y: int, shield_life: int, is_controlled: int):
@@ -244,36 +333,70 @@ class Assassin(Hero):
         global round_timer
         global my_mana
         global base
+        global metadata
+        metadata += " " + self.name
 
-        target = None
+        # Priorities :
+        # go near the idle spot
+        # farm mana if empty
+        # shield itself if needed
+        # shield monsters in enemy base
+        # opponent attack
+        ## wind opponent
+        ## control opponent
+        # wind monsters to attack TODO
+        # control monsters to attack
+        # Lowest priority : go to idle spot TODO : Should roam
 
-        monster_to_target = [monster for monster in monsters if monster.need_more]
+        # go near the idle spot
+        if self.p.getDistFrom(self.idle_point) > 800: # One step around
+            return self.move(self.idle_point)
 
-        if monster_to_target:
-            target = monster_to_target[0]
-        elif monsters:
-            target = monsters[0]
+        # farm mana if empty
+        if my_mana < 30 :
+            # TODO : improve to target the nearest one
+            monster_to_target = [monster for monster in monsters if monster.need_more]
+            if monster_to_target:
+               return self.move_on_monster(monster_to_target[NEAREST_F_B])
+
+        # shield itself if needed
+        if self.should_shield_myself():
+            return self.shield(self.id)
+
+        # shield monsters in enemy base
+        monster_to_shield = [monster for monster in monsters if monster.should_be_shield(self)]
+        if monster_to_shield:
+            return self.shield(monster_to_shield[FARTHEST_F_B].id)
         
-        if target:
-            if my_mana > 10:
-                if target.should_be_wind(self):
-                    return self.wind(base.eb)
-            return self.move_on_monster(target)
-        
-        return self.move(self.idle_point)
 
-class Opponent(Hero):
-    """Ennemy hero"""
+        # opponent attack
+        opp_protectors = [opp for opp in opp_heroes if not opp.is_assassin]
+        if opp_protectors:
+            
+            ## wind opponent
+            opp_protectors_to_wind = [opp for opp in opp_protectors if opp.should_be_wind(self)]
+            if opp_protectors_to_wind:
+                self.wind(base.p)
+            
+            ## control opponent
+            opp_protectors_to_controll = [opp for opp in opp_protectors if opp.should_be_controlled(self)]
+            if opp_protectors_to_controll:
+                self.control(opp_protectors_to_controll[FARTHEST_F_B].id, base.p)
 
-    def __init__(self, _id: int, x: int, y: int, shield_life: int, is_controlled: int):
-        super().__init__(_id, x, y, shield_life, is_controlled)
-        self.name = f"O"
+        # wind monsters to attack
+        # TODO : Is useless if too far to shield after
+        # TODO : add a check on this one
+        # monster_to_wind = [monster for monster in monsters if monster.should_be_wind(self)]
+        # if monster_to_wind:
+        #     return self.wind(base.eb)
 
-    def choose_action(self) -> str:
-        return ""
-    
-    def set_controlled(self) -> None:
-        self.is_controlled = True
+        # control monsters to attack
+        monster_to_control = [monster for monster in monsters if monster.should_be_controlled(self)]
+        if monster_to_control:
+            return self.control(monster_to_control[FARTHEST_F_B].id, base.eb)
+
+        # Lowest priority : go to idle spot
+        return self.move(self.idle_point) 
 
 
 #############
@@ -286,7 +409,7 @@ while True:
     for i in range(2):
 
         # Assassin is useless in early game, better have an other farmer / protector
-        if round_timer > 60:
+        if my_mana > 100 or (my_mana > 50 and round_timer > 90):
             heroes_mapping = [Protector, Protector, Assassin]
 
         # health: Your base health
@@ -299,6 +422,8 @@ while True:
         my_heroes = []
         opp_heroes = []
     
+        debug("##### Monster :")
+
         for i in range(entity_count):
             # _id: Unique identifier
             # _type: 0=monster, 1=your hero, 2=opponent hero
@@ -314,26 +439,29 @@ while True:
             # Changing threat_for 2 -> -1
             threat_for = -1 if threat_for == 2 else threat_for
             
+
+            # ATM only monsters have debug at initialisation
             if _type == TYPE_MONSTER:
-                debug("##### Monsters :")
                 monsters.append(Monster( _id, x, y, shield_life, is_controlled, health, vx, vy, near_base, threat_for))
-            # TODO : have an assassin class
-            # TODO : be able to switch classes depending on timer
             elif _type == TYPE_MY_HERO:
                 my_heroes.append(heroes_mapping[_id % heroes_per_player](_id, x, y, shield_life, is_controlled))
             elif _type == TYPE_OP_HERO:
                 opp_heroes.append(Opponent(_id, x, y, shield_life, is_controlled))
 
+        debug(f"{len(opp_heroes)} OPP HEROES in sight.")
+
         monsters.sort(key=lambda monster: monster.dist_from_base)
 
         for i in range(heroes_per_player):
+
+            metadata = ""
 
             hero: Hero = my_heroes[i]
             debug(f"##### Hero {hero.id} :")
 
             action: str = hero.choose_action()
-            print(action + f" {hero.name}")
+            print(action + metadata)
 
         # Affecting globals variables
-        round_timer += 1    
+        round_timer += 1
     
