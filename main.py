@@ -1,6 +1,7 @@
 import sys
 import math
 from abc import ABC, abstractmethod
+import copy
 
 # Auto-generated code below aims at helping you parse
 # the standard input according to the problem statement.
@@ -30,7 +31,7 @@ TL_NEUTRAL = 2
 TL_DANGEROUS = 3
 TL_PRIORITY = 4
 
-OFFENSIV_SPELL_MONSTER_HEALTH_TRESHOLD = 4
+OFFENSIV_SPELL_MONSTER_HEALTH_TRESHOLD = 10
 
 # Quick search in monsters list
 NEAREST_F_B = 0
@@ -68,18 +69,23 @@ class Point():
     
     def add(self, p) :
         return Point(self.x + p.x, self.y + p.y)
+    
+    def mid(self, p):
+        return Point(int((self.x + p.x) / 2), int((self.y + p.y) / 2))
 
 class Base():
 
     def __init__(self, x: int, y: int):
         self.p = Point(x, y)
+        self.eb = Point(17630, 9000) if x == 0 else Point(0, 0)
         self.protectors_idle_spots = \
-            [Point(6000, 2500), Point(2500, 6000), Point(5300, 3200)] \
+            [Point(7000, 2200), Point(2500, 6000), self.eb] \
             if x == 0 else \
-            [Point(9500, 7100), Point(11350, 4800), Point(15130, 3000)]
+            [Point(9500, 7100), Point(11350, 4800), self.eb]
+        self.protector_dfb = self.p.getDistFrom(self.p.mid(self.eb)) # Half of the map
         self.assassin_idle_spot = \
             Point(12500, 5000) if x == 0 else Point(5100, 4500)
-        self.eb = Point(17630, 9000) if x == 0 else Point(0, 0)
+        
 
         self.last_heroes_pos = [] # usefull to detect opponent wind
 
@@ -89,6 +95,7 @@ class Base():
         return self.protectors_idle_spots[i % heroes_per_player]
 
 base : Base = Base(base_x, base_y)
+monster_spot: Point = Point(5200, 4200)
 
 ###################
 # monster classes #
@@ -115,8 +122,13 @@ class Monster():
         self.attacked = 0 # Number of heros targeting the monster
         self.heros_needed = 1 #Number of heros needed to kill the monster
         self.need_more = True
+        self.dist_from_hero = 0
 
         self.update_heros_needed()
+
+    def update_dist_f_hero(self, h) -> None:
+        self.dist_from_hero = self.p.getDistFrom(h.p)
+
 
     # Usefull part for protector
 
@@ -163,7 +175,7 @@ class Monster():
 
         return self.p.getDistFrom(hero.p) <= MR_SHIELD \
             and self.shield_life == 0 \
-            and self.threat_level == TL_BFF # Is in the ennemy base
+            and self.threat_level <= TL_FRIEND # Is in the ennemy base
 
     def should_be_controlled(self, hero):
         global MR_CONTROL
@@ -216,11 +228,29 @@ class Hero(ABC):
         my_mana -= 10
         return f'SPELL CONTROL {i} {p.x} {p.y}'
 
-
     def should_shield_myself(self) -> bool:
         global my_mana
         # TODO : improve (if enemy, if was controlled or wind)
         return my_mana > 10 and self.shield_life == 0
+    
+    def get_nearest(self, list_of_monsters_or_heroes):
+        # get the nearest element from the list
+        l2 = copy.deepcopy(list_of_monsters_or_heroes) # So we don't affect l
+
+        # FIXME : does not works with OPP atm
+        # TODO : Create a higher lv class that Monster and Hero herit.
+        for elm in l2:
+            elm.update_dist_f_hero(self)
+
+        l2.sort(key=lambda monster: monster.dist_from_hero)
+
+        if l2:
+            debug(f"nearest is : {l2[0].id}")
+            return l2[0]
+        
+        debug(f"No nearest found.. out of {len(list_of_monsters_or_heroes)}")
+
+        return None
 
 
 class Opponent(Hero):
@@ -236,7 +266,7 @@ class Opponent(Hero):
     def set_controlled(self) -> None:
         self.is_controlled = True
     
-    def should_be_control(self, hero):
+    def should_be_controlled(self, hero):
         global MR_CONTROL
         global round_timer
 
@@ -271,6 +301,7 @@ class Protector(Hero):
         self.name = f"P"    
 
     def should_wind_monster_from_base(self, monster: Monster) -> bool :
+        # TODO : avoid multiple winds when not needed
         return monster.should_be_wind(self) and monster.dist_from_base < 5000 and monster.need_more
 
     def should_shield_myself(self) -> bool :
@@ -293,6 +324,9 @@ class Protector(Hero):
         if self.should_shield_myself():
             return self.shield(self.id)
 
+        if self.dist_from_base > base.protector_dfb:
+            return self.move(self.idle_point)
+
         target = None
 
         monster_to_target = [monster for monster in monsters if monster.need_more]
@@ -305,7 +339,48 @@ class Protector(Hero):
         if target:
             if my_mana > 10:
                 if self.should_wind_monster_from_base(target):
-                    return self.wind(base.eb)
+                    return self.wind(monster_spot)
+            return self.move_on_monster(target)
+        
+        return self.move(self.idle_point)
+
+
+class Farmer(Hero):
+    """Hero version that farm wild mana
+    
+    TODO : Go near enemy base to waste their mana on shields (+ farm their monsters ? )
+
+    Can use :
+        - BONK
+    """
+
+    def __init__(self, _id: int, x: int, y: int, shield_life: int, is_controlled: int):
+        global base
+        super().__init__(_id, x, y, shield_life, is_controlled)
+        self.idle_point: Point = base.p.mid(base.eb).mid(base.eb) # 3/4 of the map
+        self.name = f"F"
+
+
+    def choose_action(self) -> str:
+        # Global variables used
+        global monsters
+        global metadata
+        metadata += " " + self.name
+
+        monster_to_target = [monster for monster in monsters if monster.need_more]
+        
+        perfect_target = self.get_nearest(monster_to_target)
+
+        if perfect_target:
+            return self.move_on_monster(perfect_target)
+
+        # go near the idle spot
+        if self.p.getDistFrom(self.idle_point) > 2000:
+            return self.move(self.idle_point)
+
+        target = self.get_nearest(monsters)
+
+        if target:
             return self.move_on_monster(target)
         
         return self.move(self.idle_point)
@@ -314,6 +389,12 @@ class Protector(Hero):
 class Assassin(Hero):
     """Hero version that attack enemy base
     
+    # TODO : Change attack strategy to 
+    # 1) control and shields monster until >= ennemy health
+    # 2) move to opp and wind them away (if they are shield)
+    # 3) if shielded.. try to waste them mana ?
+
+
     Can use :
         - WIND
         - CONTROL
@@ -341,23 +422,26 @@ class Assassin(Hero):
         # farm mana if empty
         # shield itself if needed
         # shield monsters in enemy base
+        # control more monsters to attack : IF they are less than treshold
         # opponent attack
         ## wind opponent
         ## control opponent
         # wind monsters to attack TODO
-        # control monsters to attack
+        # control more monsters to attack
         # Lowest priority : go to idle spot TODO : Should roam
 
         # go near the idle spot
-        if self.p.getDistFrom(self.idle_point) > 800: # One step around
+        if self.p.getDistFrom(self.idle_point) > 2000:
             return self.move(self.idle_point)
 
+        monster_attacking_ennemy = [monster for monster in monsters if monster.threat_level < TL_NEUTRAL]
+
+        # TODO : improve this part so he 'finish' his current attack then farm a bit 
         # farm mana if empty
         if my_mana < 30 :
-            # TODO : improve to target the nearest one
-            monster_to_target = [monster for monster in monsters if monster.need_more]
-            if monster_to_target:
-               return self.move_on_monster(monster_to_target[NEAREST_F_B])
+            target = self.get_nearest(monsters)
+            if target:
+               return self.move_on_monster(target)
 
         # shield itself if needed
         if self.should_shield_myself():
@@ -367,21 +451,31 @@ class Assassin(Hero):
         monster_to_shield = [monster for monster in monsters if monster.should_be_shield(self)]
         if monster_to_shield:
             return self.shield(monster_to_shield[FARTHEST_F_B].id)
-        
+
+        # control more monsters to attack : IF they are less than treshold
+        monster_to_control = [monster for monster in monsters if monster.should_be_controlled(self)]
+        if monster_to_control and len(monster_attacking_ennemy) < 5:
+            # We change for a less agressiv spot to gather monster easely
+            self.idle_point = base.assassin_idle_spot
+            return self.control(monster_to_control[FARTHEST_F_B].id, base.eb)
+
+        # We change for a more agressiv spot
+        self.idle_point = Point(14000, 5500)
 
         # opponent attack
-        opp_protectors = [opp for opp in opp_heroes if not opp.is_assassin]
+        opp_protectors = [opp for opp in opp_heroes if not opp.is_assassin()]
+        debug(f" I SEE {len(opp_protectors)} OP P")
         if opp_protectors:
             
             ## wind opponent
             opp_protectors_to_wind = [opp for opp in opp_protectors if opp.should_be_wind(self)]
             if opp_protectors_to_wind:
-                self.wind(base.p)
+                return self.wind(base.p)
             
             ## control opponent
             opp_protectors_to_controll = [opp for opp in opp_protectors if opp.should_be_controlled(self)]
             if opp_protectors_to_controll:
-                self.control(opp_protectors_to_controll[FARTHEST_F_B].id, base.p)
+                return self.control(opp_protectors_to_controll[FARTHEST_F_B].id, base.p)
 
         # wind monsters to attack
         # TODO : Is useless if too far to shield after
@@ -391,7 +485,6 @@ class Assassin(Hero):
         #     return self.wind(base.eb)
 
         # control monsters to attack
-        monster_to_control = [monster for monster in monsters if monster.should_be_controlled(self)]
         if monster_to_control:
             return self.control(monster_to_control[FARTHEST_F_B].id, base.eb)
 
@@ -403,14 +496,18 @@ class Assassin(Hero):
 # Game loop #
 #############
 
-heroes_mapping = [Protector, Protector, Protector]
+heroes_mapping = [Protector, Protector, Farmer]
 
 while True:
     for i in range(2):
 
         # Assassin is useless in early game, better have an other farmer / protector
-        if my_mana > 100 or (my_mana > 50 and round_timer > 90):
+        if my_mana > 200 or round_timer > 120:
             heroes_mapping = [Protector, Protector, Assassin]
+        
+        # We used all mana, let's go back farming
+        #if my_mana < 30 and round_timer > 120:
+        #    heroes_mapping = [Protector, Protector, Farmer]
 
         # health: Your base health
         # mana: Ignore in the first league; Spend ten mana to cast a spell
@@ -439,7 +536,6 @@ while True:
             # Changing threat_for 2 -> -1
             threat_for = -1 if threat_for == 2 else threat_for
             
-
             # ATM only monsters have debug at initialisation
             if _type == TYPE_MONSTER:
                 monsters.append(Monster( _id, x, y, shield_life, is_controlled, health, vx, vy, near_base, threat_for))
@@ -451,6 +547,7 @@ while True:
         debug(f"{len(opp_heroes)} OPP HEROES in sight.")
 
         monsters.sort(key=lambda monster: monster.dist_from_base)
+        opp_heroes.sort(key=lambda opp_hero: opp_hero.dist_from_base)
 
         for i in range(heroes_per_player):
 
